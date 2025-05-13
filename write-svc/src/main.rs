@@ -4,7 +4,8 @@ use deadpool_postgres::{tokio_postgres::{NoTls}, ManagerConfig, Pool as Postgres
 use deadpool_redis::{redis::{cmd}, Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime};
 use serde::{Deserialize, Serialize};
 use std::{env};
-use url::{Url};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use url::Url;
 
 //-------------------------------------------------------------------
 // Request / Response payloads
@@ -32,6 +33,21 @@ struct AppState {
 //-------------------------------------------------------------------
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize tracing
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                // Axum logs rejections from built-in extractors with the `axum::rejection` target, at `TRACE` level. `axum::rejection=trace` enables showing those events
+                format!(
+                    "{}=debug,tower_http=debug,axum::rejection=trace",
+                    env!("CARGO_CRATE_NAME")
+                )
+                .into()
+            }),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
     // Load environment variables
     let db_url = env::var("DATABASE_URL")?;
     let redis_url = env::var("REDIS_URL")?;
@@ -61,7 +77,7 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await?;
 
     // Inform startup
-    println!("write-svc running on 0.0.0.0:8080");
+    tracing::info!("write-svc running on 0.0.0.0:8080");
     Ok(())
 }
 
@@ -116,7 +132,7 @@ async fn shorten(
             .query_async::<()>(&mut redis_conn)
             .await
             .unwrap();
-        println!("Cached {slug_clone} -> {url_clone} in Redis");
+        tracing::debug!("Cached {slug_clone} -> {url_clone} in Redis");
     });
 
     // Return the payload

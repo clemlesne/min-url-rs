@@ -4,6 +4,7 @@ use deadpool_postgres::{tokio_postgres::{NoTls}, ManagerConfig, Pool as Postgres
 use deadpool_redis::{redis::{cmd}, Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime};
 use moka::future::Cache;
 use std::{env, time::Duration};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Clone)]
 struct AppState {
@@ -14,6 +15,21 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize tracing
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                // Axum logs rejections from built-in extractors with the `axum::rejection` target, at `TRACE` level. `axum::rejection=trace` enables showing those events
+                format!(
+                    "{}=debug,tower_http=debug,axum::rejection=trace",
+                    env!("CARGO_CRATE_NAME")
+                )
+                .into()
+            }),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
     // Load environment variables
     let db_url = env::var("DATABASE_URL")?;
     let redis_url = env::var("REDIS_URL")?;
@@ -49,7 +65,7 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await?;
 
     // Inform startup
-    println!("redirect-svc running on 0.0.0.0:8080");
+    tracing::info!("redirect-svc running on 0.0.0.0:8080");
     Ok(())
 }
 
@@ -59,7 +75,7 @@ async fn handle_redirect(
 ) -> impl IntoResponse {
     // If slug is in the memory cache, return it
     if let Some(url) = state.memory_cache.get(&slug).await {
-        println!("Slug {slug} found in memory cache");
+        tracing::debug!("Slug {slug} found in memory cache");
         return Redirect::temporary(&url).into_response();
     }
 
@@ -81,6 +97,7 @@ async fn lookup(slug: &str, state: &AppState) -> Result<Option<String>> {
     // If slug is in Redis, return it
     if let Some(url) = cmd("GET").arg(slug).query_async::<Option<String>>(&mut redis_conn).await? {
         println!("Slug {slug} found in Redis");
+        tracing::debug!("Slug {slug} found in Redis");
         return Ok(Some(url));
     }
 
@@ -92,7 +109,7 @@ async fn lookup(slug: &str, state: &AppState) -> Result<Option<String>> {
 
     // If not found, return None
     if rows.is_empty() {
-        println!("Slug {slug} not found");
+        tracing::debug!("Slug {slug} not found");
         return Ok(None);
     }
 
@@ -107,7 +124,7 @@ async fn lookup(slug: &str, state: &AppState) -> Result<Option<String>> {
             .query_async::<()>(&mut redis_conn)
             .await
             .unwrap();
-        println!("Stored slug {slug} in Redis");
+        tracing::debug!("Stored slug {slug} in Redis");
     });
     Ok(Some(url))
 }

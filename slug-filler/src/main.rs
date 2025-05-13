@@ -2,14 +2,30 @@ use anyhow::{Result};
 use deadpool_postgres::{tokio_postgres::{NoTls}, ManagerConfig, Pool as PostgresPool, RecyclingMethod, Runtime as PgRuntime};
 use deadpool_redis::{redis::{cmd}, Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime};
 use rand::{distr::Uniform, Rng};
-use std::{env, time::Duration};
 use std::collections::HashSet;
-use tokio::{time};
+use std::{env, time::Duration};
+use tokio::time;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 const BASE62: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize tracing
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                // Axum logs rejections from built-in extractors with the `axum::rejection` target, at `TRACE` level. `axum::rejection=trace` enables showing those events
+                format!(
+                    "{}=debug,tower_http=debug,axum::rejection=trace",
+                    env!("CARGO_CRATE_NAME")
+                )
+                .into()
+            }),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
     // Load environment variables
     let db_url = env::var("DATABASE_URL")?;
     let queue_size: usize = env::var("QUEUE_SIZE")?.parse()?;
@@ -32,7 +48,9 @@ async fn main() -> Result<()> {
     let pg_pool: PostgresPool = pg_cfg.create_pool(Some(PgRuntime::Tokio1), NoTls)?;
 
     // Inform startup
-    println!("slug-filler connected to queue={queue_size}, batch={batch_size}, slug_len={slug_len}");
+    tracing::debug!(
+        "slug-filler connected to queue={queue_size}, batch={batch_size}, slug_len={slug_len}"
+    );
 
     // Create a thread-local random number generator
     let mut rng = rand::rng();
@@ -42,6 +60,7 @@ async fn main() -> Result<()> {
     loop {
         if let Err(e) = refill(&redis_pool, &pg_pool, &mut rng, &dist, queue_size, slug_len, batch_size).await {
             eprintln!("[warn] {e:?}");
+            tracing::warn!("Failed refill: {e:?}");
         }
         time::sleep(Duration::from_millis(250)).await;
     }
@@ -65,7 +84,7 @@ async fn refill<R: Rng + ?Sized>(
         .query_async::<usize>(&mut redis_conn)
         .await?;
     if len >= queue_size {
-        // println!("Current slug_pool size is {len}, no need to refill");
+        tracing::debug!("Current slug_pool size is {len}, no need to refill");
         return Ok(());
     }
 
@@ -89,12 +108,12 @@ async fn refill<R: Rng + ?Sized>(
     if !rows.is_empty() {
         let taken: HashSet<&str> = rows.iter().map(|r| r.get::<usize, &str>(0)).collect();
         batch.retain(|s| !taken.contains(s.as_str()));
-        println!("Removed {} existing slugs from the batch", taken.len());
+        tracing::debug!("Removed {} existing slugs from the batch", taken.len());
     }
 
     // If the batch is empty, do nothing
     if batch.is_empty() {
-        println!("No new slugs to add to the slug_pool");
+        tracing::debug!("No new slugs to add to the slug_pool");
         return Ok(());
     }
 
@@ -104,7 +123,7 @@ async fn refill<R: Rng + ?Sized>(
         .arg(&batch)
         .query_async::<()>(&mut redis_conn)
         .await?;
-    println!("Added {} slugs to the slug_pool", batch.len());
+    tracing::debug!("Added {} slugs to the slug_pool", batch.len());
 
     Ok(())
 }
