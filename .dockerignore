@@ -2,6 +2,7 @@
 *
 
 # Allow only project files
+!*/Cargo.toml
+!*/src/
 !Cargo.lock
 !Cargo.toml
-!src/

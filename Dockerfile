@@ -10,22 +10,22 @@ FROM rust:${RUST_VERSION}-slim-bookworm AS builder
 # Source platform from buildx "platform" argument
 ARG TARGETPLATFORM
 
+# Service to package
+ARG SERVICE_NAME
+
 # Build directory
-WORKDIR /app
+WORKDIR /app-root
 
 # Copy sources
 COPY . .
 
 # Build
-RUN --mount=target=/app/target/,type=cache,id=build-write-svc-${TARGETPLATFORM},sharing=locked --mount=target=/usr/local/cargo/registry/,type=cache,id=cargo-${TARGETPLATFORM},sharing=locked \
-    cargo build --release \
-    && cp ./target/release/write-svc /write-svc
+RUN --mount=target=/app-root/target/,type=cache,id=build-${TARGETPLATFORM},sharing=locked --mount=target=/usr/local/cargo/registry/,type=cache,id=cargo-${TARGETPLATFORM},sharing=locked \
+    cargo build --release --package ${SERVICE_NAME} \
+    && mv target/release/${SERVICE_NAME} service
 
 # Output container
 FROM debian:bookworm-slim AS final
-
-# Source platform from buildx "platform" argument
-ARG TARGETPLATFORM
 
 # Setup user
 RUN adduser \
@@ -38,13 +38,13 @@ RUN adduser \
     appuser
 
 # Copy binary
-COPY --from=builder /write-svc /usr/local/bin
-RUN chown appuser /usr/local/bin/write-svc
+COPY --from=builder /app-root/service /usr/local/bin
+RUN chown appuser /usr/local/bin/service
+
+# Setup environment
+ENTRYPOINT ["service"]
+EXPOSE 8080/tcp
+USER appuser
 
 # Configure logging
 ENV RUST_LOG="hello_rs=debug,info"
-
-# Setup environment
-ENTRYPOINT ["write-svc"]
-EXPOSE 8080/tcp
-USER appuser
