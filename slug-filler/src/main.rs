@@ -1,14 +1,21 @@
-use anyhow::{Result};
-use deadpool_postgres::{tokio_postgres::{NoTls}, ManagerConfig, Pool as PostgresPool, RecyclingMethod, Runtime as PgRuntime};
-use deadpool_redis::{redis::{cmd}, Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime};
-use rand::{distr::Uniform, Rng};
+use anyhow::Result;
+use deadpool_postgres::{
+    ManagerConfig, Pool as PostgresPool, RecyclingMethod, Runtime as PgRuntime,
+    tokio_postgres::NoTls,
+};
+use deadpool_redis::{
+    Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime, redis::cmd,
+};
+use rand::{Rng, distr::Uniform};
 use std::collections::HashSet;
 use std::{env, time::Duration};
 use tokio::time;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+/// Base62 character set
 const BASE62: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
+/// Entrypoint
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing
@@ -66,6 +73,7 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Slug filler, fills the Redis slug pool with random slugs, ensuring that they are unique
 async fn refill<R: Rng + ?Sized>(
     redis_pool: &RedisPool,
     pg_pool: &PostgresPool,

@@ -1,15 +1,18 @@
-use anyhow::{Result};
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
-use deadpool_postgres::{tokio_postgres::{NoTls}, ManagerConfig, Pool as PostgresPool, RecyclingMethod, Runtime as PgRuntime};
-use deadpool_redis::{redis::{cmd}, Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime};
+use anyhow::Result;
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
+use deadpool_postgres::{
+    ManagerConfig, Pool as PostgresPool, RecyclingMethod, Runtime as PgRuntime,
+    tokio_postgres::NoTls,
+};
+use deadpool_redis::{
+    Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime, redis::cmd,
+};
 use serde::{Deserialize, Serialize};
-use std::{env};
+use std::env;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
 
-//-------------------------------------------------------------------
-// Request / Response payloads
-//-------------------------------------------------------------------
+/// Shorten URL JSON payload
 #[derive(Deserialize, Serialize)]
 struct ShortenPayload {
     #[serde(default)]
@@ -19,18 +22,26 @@ struct ShortenPayload {
     url: Url,
 }
 
-//-------------------------------------------------------------------
-// Application state
-//-------------------------------------------------------------------
+/// Slug allocation error
+struct MiniErr {
+    status: Status,
+}
+
+/// Slug allocation error status
+enum Status {
+    NoSlug,
+    DbConflict,
+    Other,
+}
+
+/// Web application state
 #[derive(Clone)]
 struct AppState {
     pg_pool: PostgresPool,
     redis_pool: RedisPool,
 }
 
-//-------------------------------------------------------------------
-// Main
-//-------------------------------------------------------------------
+/// Entrypoint
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing
@@ -81,9 +92,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-//-------------------------------------------------------------------
-// Handler
-//-------------------------------------------------------------------
+/// Shorten URL handler
 async fn shorten(
     State(state): State<AppState>,
     Json(payload): Json<ShortenPayload>,
@@ -143,15 +152,7 @@ async fn shorten(
     })))
 }
 
-//-------------------------------------------------------------------
-// Mini‑slug allocation logic
-//-------------------------------------------------------------------
-struct MiniErr {
-    status: Status,
-}
-
-enum Status { NoSlug, DbConflict, Other }
-
+/// Allocate a mini-slug from the pool, retrying up to 3 times
 async fn allocate_mini_slug(state: &AppState, payload: &ShortenPayload) -> Result<String, MiniErr> {
     // Retry up to 3 times
     for _ in 0..3 {

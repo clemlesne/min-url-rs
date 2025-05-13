@@ -1,11 +1,22 @@
-use anyhow::{Result};
-use axum::{extract::Path, response::{IntoResponse, Redirect}, routing::get, Router};
-use deadpool_postgres::{tokio_postgres::{NoTls}, ManagerConfig, Pool as PostgresPool, RecyclingMethod, Runtime as PgRuntime};
-use deadpool_redis::{redis::{cmd}, Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime};
+use anyhow::Result;
+use axum::{
+    Router,
+    extract::Path,
+    response::{IntoResponse, Redirect},
+    routing::get,
+};
+use deadpool_postgres::{
+    ManagerConfig, Pool as PostgresPool, RecyclingMethod, Runtime as PgRuntime,
+    tokio_postgres::NoTls,
+};
+use deadpool_redis::{
+    Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime, redis::cmd,
+};
 use moka::future::Cache;
 use std::{env, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+/// Web application state
 #[derive(Clone)]
 struct AppState {
     memory_cache: Cache<String, String>,
@@ -13,6 +24,7 @@ struct AppState {
     redis_pool: RedisPool,
 }
 
+/// Entrypoint
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing
