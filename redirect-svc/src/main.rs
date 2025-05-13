@@ -85,10 +85,9 @@ async fn main() -> Result<()> {
 
     // Start the server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+    tracing::info!("redirect-svc running on {}", listener.local_addr()?);
     axum::serve(listener, app).await?;
 
-    // Inform startup
-    tracing::info!("redirect-svc running on 0.0.0.0:8080");
     Ok(())
 }
 
