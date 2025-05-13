@@ -14,6 +14,8 @@ use deadpool_redis::{
 };
 use moka::future::Cache;
 use std::{env, time::Duration};
+use tower::ServiceBuilder;
+use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Web application state
@@ -74,7 +76,12 @@ async fn main() -> Result<()> {
     // Register the slug handler
     let app = Router::new()
         .route("/{slug}", get(handle_redirect))
-        .with_state(state);
+        .with_state(state)
+        .layer(
+            ServiceBuilder::new()
+                .layer(RequestDecompressionLayer::new())
+                .layer(CompressionLayer::new()),
+        );
 
     // Start the server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;

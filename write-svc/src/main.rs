@@ -9,6 +9,8 @@ use deadpool_redis::{
 };
 use serde::{Deserialize, Serialize};
 use std::env;
+use tower::ServiceBuilder;
+use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
 
@@ -84,7 +86,12 @@ async fn main() -> Result<()> {
     // Register the shorten handler
     let app = Router::new()
         .route("/shorten", post(shorten))
-        .with_state(state);
+        .with_state(state)
+        .layer(
+            ServiceBuilder::new()
+                .layer(RequestDecompressionLayer::new())
+                .layer(CompressionLayer::new()),
+        );
 
     // Start the server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
