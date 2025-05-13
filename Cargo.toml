@@ -1,0 +1,3 @@
+[workspace]
+members = ["redirect-svc", "slug-filler", "write-svc"]
+resolver = "2"

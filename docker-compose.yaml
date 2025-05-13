@@ -37,8 +37,8 @@ services:
   redirect-svc:
     restart: unless-stopped
     build:
-      context: ./redirect-svc
-      dockerfile: Dockerfile
+      args:
+        - SERVICE_NAME=redirect-svc
     environment:
       CACHE_SIZE: "100"
       DATABASE_URL: postgres://min-url-rs:changeme@postgres/min-url-rs
@@ -54,8 +54,8 @@ services:
   slug-filler:
     restart: unless-stopped
     build:
-      context: ./slug-filler
-      dockerfile: Dockerfile
+      args:
+        - SERVICE_NAME=slug-filler
     environment:
       DATABASE_URL: postgres://min-url-rs:changeme@postgres/min-url-rs
       QUEUE_SIZE: "100000" # 100k
@@ -70,8 +70,8 @@ services:
   write-svc:
     restart: unless-stopped
     build:
-      context: ./write-svc
-      dockerfile: Dockerfile
+      args:
+        - SERVICE_NAME=write-svc
     environment:
       DATABASE_URL: postgres://min-url-rs:changeme@postgres/min-url-rs
       REDIS_URL: redis://redis:6379

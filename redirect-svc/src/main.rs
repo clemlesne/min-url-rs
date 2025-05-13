@@ -1,10 +1,24 @@
-use anyhow::{Result};
-use axum::{extract::Path, response::{IntoResponse, Redirect}, routing::get, Router};
-use deadpool_postgres::{tokio_postgres::{NoTls}, ManagerConfig, Pool as PostgresPool, RecyclingMethod, Runtime as PgRuntime};
-use deadpool_redis::{redis::{cmd}, Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime};
+use anyhow::Result;
+use axum::{
+    Router,
+    extract::Path,
+    response::{IntoResponse, Redirect},
+    routing::get,
+};
+use deadpool_postgres::{
+    ManagerConfig, Pool as PostgresPool, RecyclingMethod, Runtime as PgRuntime,
+    tokio_postgres::NoTls,
+};
+use deadpool_redis::{
+    Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime, redis::cmd,
+};
 use moka::future::Cache;
 use std::{env, time::Duration};
+use tower::ServiceBuilder;
+use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+/// Web application state
 #[derive(Clone)]
 struct AppState {
     memory_cache: Cache<String, String>,
@@ -12,8 +26,24 @@ struct AppState {
     redis_pool: RedisPool,
 }
 
+/// Entrypoint
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize tracing
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                // Axum logs rejections from built-in extractors with the `axum::rejection` target, at `TRACE` level. `axum::rejection=trace` enables showing those events
+                format!(
+                    "{}=debug,tower_http=debug,axum::rejection=trace",
+                    env!("CARGO_CRATE_NAME")
+                )
+                .into()
+            }),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
     // Load environment variables
     let db_url = env::var("DATABASE_URL")?;
     let redis_url = env::var("REDIS_URL")?;
@@ -37,19 +67,27 @@ async fn main() -> Result<()> {
         .build();
 
     // Build the app state
-    let state = AppState { redis_pool, pg_pool, memory_cache };
+    let state = AppState {
+        redis_pool,
+        pg_pool,
+        memory_cache,
+    };
 
     // Register the slug handler
     let app = Router::new()
         .route("/{slug}", get(handle_redirect))
-        .with_state(state);
+        .with_state(state)
+        .layer(
+            ServiceBuilder::new()
+                .layer(RequestDecompressionLayer::new())
+                .layer(CompressionLayer::new()),
+        );
 
     // Start the server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+    tracing::info!("redirect-svc running on {}", listener.local_addr()?);
     axum::serve(listener, app).await?;
 
-    // Inform startup
-    println!("redirect-svc running on 0.0.0.0:8080");
     Ok(())
 }
 
@@ -59,7 +97,7 @@ async fn handle_redirect(
 ) -> impl IntoResponse {
     // If slug is in the memory cache, return it
     if let Some(url) = state.memory_cache.get(&slug).await {
-        println!("Slug {slug} found in memory cache");
+        tracing::debug!("Slug {slug} found in memory cache");
         return Redirect::temporary(&url).into_response();
     }
 
@@ -79,8 +117,12 @@ async fn lookup(slug: &str, state: &AppState) -> Result<Option<String>> {
     let mut redis_conn = state.redis_pool.get().await?;
 
     // If slug is in Redis, return it
-    if let Some(url) = cmd("GET").arg(&slug).query_async::<Option<String>>(&mut redis_conn).await? {
-        println!("Slug {slug} found in Redis");
+    if let Some(url) = cmd("GET")
+        .arg(slug)
+        .query_async::<Option<String>>(&mut redis_conn)
+        .await?
+    {
+        tracing::debug!("Slug {slug} found in Redis");
         return Ok(Some(url));
     }
 
@@ -88,11 +130,13 @@ async fn lookup(slug: &str, state: &AppState) -> Result<Option<String>> {
     let pg_client = state.pg_pool.get().await?;
 
     // Look up the slug in PostgreSQL
-    let rows = pg_client.query("SELECT url FROM slugs WHERE slug=$1", &[&slug]).await?;
+    let rows = pg_client
+        .query("SELECT url FROM slugs WHERE slug=$1", &[&slug])
+        .await?;
 
     // If not found, return None
     if rows.is_empty() {
-        println!("Slug {slug} not found");
+        tracing::debug!("Slug {slug} not found");
         return Ok(None);
     }
 
@@ -107,7 +151,7 @@ async fn lookup(slug: &str, state: &AppState) -> Result<Option<String>> {
             .query_async::<()>(&mut redis_conn)
             .await
             .unwrap();
-        println!("Stored slug {slug} in Redis");
+        tracing::debug!("Stored slug {slug} in Redis");
     });
     Ok(Some(url))
 }

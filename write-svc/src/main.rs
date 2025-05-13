@@ -1,14 +1,20 @@
-use anyhow::{Result};
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
-use deadpool_postgres::{tokio_postgres::{NoTls}, ManagerConfig, Pool as PostgresPool, RecyclingMethod, Runtime as PgRuntime};
-use deadpool_redis::{redis::{cmd}, Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime};
+use anyhow::Result;
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
+use deadpool_postgres::{
+    ManagerConfig, Pool as PostgresPool, RecyclingMethod, Runtime as PgRuntime,
+    tokio_postgres::NoTls,
+};
+use deadpool_redis::{
+    Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime, redis::cmd,
+};
 use serde::{Deserialize, Serialize};
-use std::{env};
-use url::{Url};
+use std::env;
+use tower::ServiceBuilder;
+use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use url::Url;
 
-//-------------------------------------------------------------------
-// Request / Response payloads
-//-------------------------------------------------------------------
+/// Shorten URL JSON payload
 #[derive(Deserialize, Serialize)]
 struct ShortenPayload {
     #[serde(default)]
@@ -18,20 +24,43 @@ struct ShortenPayload {
     url: Url,
 }
 
-//-------------------------------------------------------------------
-// Application state
-//-------------------------------------------------------------------
+/// Slug allocation error
+struct MiniErr {
+    status: Status,
+}
+
+/// Slug allocation error status
+enum Status {
+    NoSlug,
+    DbConflict,
+    Other,
+}
+
+/// Web application state
 #[derive(Clone)]
 struct AppState {
     pg_pool: PostgresPool,
     redis_pool: RedisPool,
 }
 
-//-------------------------------------------------------------------
-// Main
-//-------------------------------------------------------------------
+/// Entrypoint
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize tracing
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                // Axum logs rejections from built-in extractors with the `axum::rejection` target, at `TRACE` level. `axum::rejection=trace` enables showing those events
+                format!(
+                    "{}=debug,tower_http=debug,axum::rejection=trace",
+                    env!("CARGO_CRATE_NAME")
+                )
+                .into()
+            }),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
     // Load environment variables
     let db_url = env::var("DATABASE_URL")?;
     let redis_url = env::var("REDIS_URL")?;
@@ -49,25 +78,30 @@ async fn main() -> Result<()> {
     let pg_pool: PostgresPool = pg_cfg.create_pool(Some(PgRuntime::Tokio1), NoTls)?;
 
     // Build the app state
-    let state = AppState { redis_pool, pg_pool };
+    let state = AppState {
+        redis_pool,
+        pg_pool,
+    };
 
     // Register the shorten handler
     let app = Router::new()
         .route("/shorten", post(shorten))
-        .with_state(state);
+        .with_state(state)
+        .layer(
+            ServiceBuilder::new()
+                .layer(RequestDecompressionLayer::new())
+                .layer(CompressionLayer::new()),
+        );
 
     // Start the server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+    tracing::info!("write-svc running on {}", listener.local_addr()?);
     axum::serve(listener, app).await?;
 
-    // Inform startup
-    println!("write-svc running on 0.0.0.0:8080");
     Ok(())
 }
 
-//-------------------------------------------------------------------
-// Handler
-//-------------------------------------------------------------------
+/// Shorten URL handler
 async fn shorten(
     State(state): State<AppState>,
     Json(payload): Json<ShortenPayload>,
@@ -92,11 +126,13 @@ async fn shorten(
 
     // Otherwise, allocate a mini-slug from the pool
     } else {
-        allocate_mini_slug(&state, &payload).await.map_err(|e| match e.status {
-            Status::NoSlug => StatusCode::SERVICE_UNAVAILABLE,
-            Status::DbConflict => StatusCode::CONFLICT,
-            Status::Other => StatusCode::SERVICE_UNAVAILABLE,
-        })?
+        allocate_mini_slug(&state, &payload)
+            .await
+            .map_err(|e| match e.status {
+                Status::NoSlug => StatusCode::SERVICE_UNAVAILABLE,
+                Status::DbConflict => StatusCode::CONFLICT,
+                Status::Other => StatusCode::SERVICE_UNAVAILABLE,
+            })?
     };
 
     // Try to get a Redis connection
@@ -112,39 +148,46 @@ async fn shorten(
     tokio::spawn(async move {
         cmd("SET")
             .arg(&slug_clone)
-            .arg(&url_clone.as_str())
+            .arg(url_clone.as_str())
             .query_async::<()>(&mut redis_conn)
             .await
             .unwrap();
-        println!("Cached {slug_clone} -> {url_clone} in Redis");
+        tracing::debug!("Cached {slug_clone} -> {url_clone} in Redis");
     });
 
     // Return the payload
-    Ok((StatusCode::CREATED, Json(ShortenPayload {
-        owner: payload.owner,
-        slug: Some(slug),
-        url: payload.url.clone(),
-    })))
+    Ok((
+        StatusCode::CREATED,
+        Json(ShortenPayload {
+            owner: payload.owner,
+            slug: Some(slug),
+            url: payload.url.clone(),
+        }),
+    ))
 }
 
-//-------------------------------------------------------------------
-// Mini‑slug allocation logic
-//-------------------------------------------------------------------
-struct MiniErr {
-    status: Status,
-}
-
-enum Status { NoSlug, DbConflict, Other }
-
+/// Allocate a mini-slug from the pool, retrying up to 3 times
 async fn allocate_mini_slug(state: &AppState, payload: &ShortenPayload) -> Result<String, MiniErr> {
     // Retry up to 3 times
     for _ in 0..3 {
         // 1, pop slug from Redis list
-        let mut rconn = state.redis_pool.get().await.map_err(|_| MiniErr { status: Status::Other })?;
-        let slug_opt: Option<String> = cmd("RPOP").arg("slug_pool").query_async(&mut rconn).await.map_err(|_| MiniErr { status: Status::Other })?;
+        let mut rconn = state.redis_pool.get().await.map_err(|_| MiniErr {
+            status: Status::Other,
+        })?;
+        let slug_opt: Option<String> = cmd("RPOP")
+            .arg("slug_pool")
+            .query_async(&mut rconn)
+            .await
+            .map_err(|_| MiniErr {
+            status: Status::Other,
+        })?;
         let slug = match slug_opt {
             Some(s) => s,
-            None => return Err(MiniErr { status: Status::NoSlug }),
+            None => {
+                return Err(MiniErr {
+                    status: Status::NoSlug,
+                });
+            }
         };
 
         // 2, try insert into Postgres
@@ -154,18 +197,27 @@ async fn allocate_mini_slug(state: &AppState, payload: &ShortenPayload) -> Resul
                 // collision, retry with another slug
                 continue;
             }
-            Err(_) => return Err(MiniErr { status: Status::Other }),
+            Err(_) => {
+                return Err(MiniErr {
+                    status: Status::Other,
+                });
+            }
         }
     }
 
     // 3, exhausted all retries
-    Err(MiniErr { status: Status::DbConflict })
+    Err(MiniErr {
+        status: Status::DbConflict,
+    })
 }
 
-//-------------------------------------------------------------------
-// DB insert helper (returns Ok(true) if inserted, Ok(false) on conflict)
-//-------------------------------------------------------------------
-async fn insert_slug(state: &AppState, slug: &str, url: &Url, owner: &Option<String>) -> Result<bool> {
+/// DB insert helper (returns Ok(true) if inserted, Ok(false) on conflict)
+async fn insert_slug(
+    state: &AppState,
+    slug: &str,
+    url: &Url,
+    owner: &Option<String>,
+) -> Result<bool> {
     let client = state.pg_pool.get().await?;
     let rows = client
         .execute("INSERT INTO slugs (first_char, slug, url, owner) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING", &[&(&slug[0..1]), &slug, &url.as_str(), &owner])

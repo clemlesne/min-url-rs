@@ -1,22 +1,15 @@
 install:
-	@echo "➡️ Setting up redirect-svc"
-	cargo install --locked --path redirect-svc
-	
-	@echo "➡️ Setting up slug-filler"
-	cargo install --locked --path slug-filler
+	@echo "➡️ Setting up Clippy"
+	rustup component add clippy
 
-	@echo "➡️ Setting up write-svc"
+	@echo "➡️ Setting up dependencies"
+	cargo install --locked --path redirect-svc
+	cargo install --locked --path slug-filler
 	cargo install --locked --path write-svc
 
 upgrade:
-	@echo "➡️ Upgrading redirect-svc"
-	cargo install --force --path redirect-svc
-
-	@echo "➡️ Upgrading slug-filler"
-	cargo install --force --path slug-filler
-
-	@echo "➡️ Upgrading write-svc"
-	cargo install --force --path write-svc
+	@echo "➡️ Upgrading dependencies"
+	cargo update
 
 dev:
 	@echo "➡️ Running dev services"
@@ -25,3 +18,11 @@ dev:
 clean:
 	@echo "➡️ Cleaning up dev services"
 	docker compose down -v
+
+lint:
+	@echo "➡️ Running clippy"
+	cargo clippy --frozen --fix
+
+test:
+	@echo "➡️ Running Clippy"
+	cargo clippy --frozen
