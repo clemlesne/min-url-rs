@@ -79,7 +79,7 @@ async fn lookup(slug: &str, state: &AppState) -> Result<Option<String>> {
     let mut redis_conn = state.redis_pool.get().await?;
 
     // If slug is in Redis, return it
-    if let Some(url) = cmd("GET").arg(&slug).query_async::<Option<String>>(&mut redis_conn).await? {
+    if let Some(url) = cmd("GET").arg(slug).query_async::<Option<String>>(&mut redis_conn).await? {
         println!("Slug {slug} found in Redis");
         return Ok(Some(url));
     }

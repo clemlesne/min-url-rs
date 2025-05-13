@@ -112,7 +112,7 @@ async fn shorten(
     tokio::spawn(async move {
         cmd("SET")
             .arg(&slug_clone)
-            .arg(&url_clone.as_str())
+            .arg(url_clone.as_str())
             .query_async::<()>(&mut redis_conn)
             .await
             .unwrap();
