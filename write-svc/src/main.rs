@@ -76,7 +76,10 @@ async fn main() -> Result<()> {
     let pg_pool: PostgresPool = pg_cfg.create_pool(Some(PgRuntime::Tokio1), NoTls)?;
 
     // Build the app state
-    let state = AppState { redis_pool, pg_pool };
+    let state = AppState {
+        redis_pool,
+        pg_pool,
+    };
 
     // Register the shorten handler
     let app = Router::new()
@@ -117,11 +120,13 @@ async fn shorten(
 
     // Otherwise, allocate a mini-slug from the pool
     } else {
-        allocate_mini_slug(&state, &payload).await.map_err(|e| match e.status {
-            Status::NoSlug => StatusCode::SERVICE_UNAVAILABLE,
-            Status::DbConflict => StatusCode::CONFLICT,
-            Status::Other => StatusCode::SERVICE_UNAVAILABLE,
-        })?
+        allocate_mini_slug(&state, &payload)
+            .await
+            .map_err(|e| match e.status {
+                Status::NoSlug => StatusCode::SERVICE_UNAVAILABLE,
+                Status::DbConflict => StatusCode::CONFLICT,
+                Status::Other => StatusCode::SERVICE_UNAVAILABLE,
+            })?
     };
 
     // Try to get a Redis connection
@@ -145,11 +150,14 @@ async fn shorten(
     });
 
     // Return the payload
-    Ok((StatusCode::CREATED, Json(ShortenPayload {
-        owner: payload.owner,
-        slug: Some(slug),
-        url: payload.url.clone(),
-    })))
+    Ok((
+        StatusCode::CREATED,
+        Json(ShortenPayload {
+            owner: payload.owner,
+            slug: Some(slug),
+            url: payload.url.clone(),
+        }),
+    ))
 }
 
 /// Allocate a mini-slug from the pool, retrying up to 3 times
@@ -157,11 +165,23 @@ async fn allocate_mini_slug(state: &AppState, payload: &ShortenPayload) -> Resul
     // Retry up to 3 times
     for _ in 0..3 {
         // 1, pop slug from Redis list
-        let mut rconn = state.redis_pool.get().await.map_err(|_| MiniErr { status: Status::Other })?;
-        let slug_opt: Option<String> = cmd("RPOP").arg("slug_pool").query_async(&mut rconn).await.map_err(|_| MiniErr { status: Status::Other })?;
+        let mut rconn = state.redis_pool.get().await.map_err(|_| MiniErr {
+            status: Status::Other,
+        })?;
+        let slug_opt: Option<String> = cmd("RPOP")
+            .arg("slug_pool")
+            .query_async(&mut rconn)
+            .await
+            .map_err(|_| MiniErr {
+            status: Status::Other,
+        })?;
         let slug = match slug_opt {
             Some(s) => s,
-            None => return Err(MiniErr { status: Status::NoSlug }),
+            None => {
+                return Err(MiniErr {
+                    status: Status::NoSlug,
+                });
+            }
         };
 
         // 2, try insert into Postgres
@@ -171,18 +191,27 @@ async fn allocate_mini_slug(state: &AppState, payload: &ShortenPayload) -> Resul
                 // collision, retry with another slug
                 continue;
             }
-            Err(_) => return Err(MiniErr { status: Status::Other }),
+            Err(_) => {
+                return Err(MiniErr {
+                    status: Status::Other,
+                });
+            }
         }
     }
 
     // 3, exhausted all retries
-    Err(MiniErr { status: Status::DbConflict })
+    Err(MiniErr {
+        status: Status::DbConflict,
+    })
 }
 
-//-------------------------------------------------------------------
-// DB insert helper (returns Ok(true) if inserted, Ok(false) on conflict)
-//-------------------------------------------------------------------
-async fn insert_slug(state: &AppState, slug: &str, url: &Url, owner: &Option<String>) -> Result<bool> {
+/// DB insert helper (returns Ok(true) if inserted, Ok(false) on conflict)
+async fn insert_slug(
+    state: &AppState,
+    slug: &str,
+    url: &Url,
+    owner: &Option<String>,
+) -> Result<bool> {
     let client = state.pg_pool.get().await?;
     let rows = client
         .execute("INSERT INTO slugs (first_char, slug, url, owner) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING", &[&(&slug[0..1]), &slug, &url.as_str(), &owner])

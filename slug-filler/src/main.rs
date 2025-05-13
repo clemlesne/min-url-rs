@@ -65,8 +65,17 @@ async fn main() -> Result<()> {
 
     // Loop indefinitely every 250ms
     loop {
-        if let Err(e) = refill(&redis_pool, &pg_pool, &mut rng, &dist, queue_size, slug_len, batch_size).await {
-            eprintln!("[warn] {e:?}");
+        if let Err(e) = refill(
+            &redis_pool,
+            &pg_pool,
+            &mut rng,
+            &dist,
+            queue_size,
+            slug_len,
+            batch_size,
+        )
+        .await
+        {
             tracing::warn!("Failed refill: {e:?}");
         }
         time::sleep(Duration::from_millis(250)).await;
@@ -107,10 +116,12 @@ async fn refill<R: Rng + ?Sized>(
 
     // Get a PostgreSQL connection
     let pg_client = pg_pool.get().await?;
-    
+
     // Validate against the database
     let slug_refs: Vec<&str> = batch.iter().map(|s| s.as_str()).collect();
-    let rows = pg_client.query("SELECT slug FROM slugs WHERE slug = ANY($1)", &[&slug_refs]).await?;
+    let rows = pg_client
+        .query("SELECT slug FROM slugs WHERE slug = ANY($1)", &[&slug_refs])
+        .await?;
 
     // Remove existing slugs from the batch
     if !rows.is_empty() {

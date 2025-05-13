@@ -65,7 +65,11 @@ async fn main() -> Result<()> {
         .build();
 
     // Build the app state
-    let state = AppState { redis_pool, pg_pool, memory_cache };
+    let state = AppState {
+        redis_pool,
+        pg_pool,
+        memory_cache,
+    };
 
     // Register the slug handler
     let app = Router::new()
@@ -107,8 +111,11 @@ async fn lookup(slug: &str, state: &AppState) -> Result<Option<String>> {
     let mut redis_conn = state.redis_pool.get().await?;
 
     // If slug is in Redis, return it
-    if let Some(url) = cmd("GET").arg(slug).query_async::<Option<String>>(&mut redis_conn).await? {
-        println!("Slug {slug} found in Redis");
+    if let Some(url) = cmd("GET")
+        .arg(slug)
+        .query_async::<Option<String>>(&mut redis_conn)
+        .await?
+    {
         tracing::debug!("Slug {slug} found in Redis");
         return Ok(Some(url));
     }
@@ -117,7 +124,9 @@ async fn lookup(slug: &str, state: &AppState) -> Result<Option<String>> {
     let pg_client = state.pg_pool.get().await?;
 
     // Look up the slug in PostgreSQL
-    let rows = pg_client.query("SELECT url FROM slugs WHERE slug=$1", &[&slug]).await?;
+    let rows = pg_client
+        .query("SELECT url FROM slugs WHERE slug=$1", &[&slug])
+        .await?;
 
     // If not found, return None
     if rows.is_empty() {
