@@ -1,0 +1,7 @@
+# Ignore all by default
+*
+
+# Allow only project files
+!Cargo.lock
+!Cargo.toml
+!src/
