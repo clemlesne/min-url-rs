@@ -1,6 +1,6 @@
 [package]
 name = "redirect-svc"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
@@ -12,6 +12,9 @@ moka = { version = "0.12.10", features = ["future"] }
 once_cell = "1.21.3"
 tokio = { version = "1.45.0", features = ["full"] }
 tower = "0.5.2"
-tower-http = { version = "0.6.4", features = ["compression-full", "decompression-full"] }
+tower-http = { version = "0.6.4", features = [
+    "compression-full",
+    "decompression-full",
+] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
