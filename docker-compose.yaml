@@ -1,0 +1,88 @@
+services:
+  postgres:
+    # See: https://hub.docker.com/_/postgres
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: min-url-rs
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_USER: min-url-rs
+    healthcheck:
+      interval: 10s
+      retries: 5
+      test:
+        ["CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DB}"]
+      timeout: 5s
+    volumes:
+      - pgdata:/var/lib/postgresql/data # Persist data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro # Init schema
+    ports:
+      - "5432:5432"
+
+  redis:
+    # See: https://hub.docker.com/_/redis
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    restart: unless-stopped
+    healthcheck:
+      interval: 5s
+      retries: 5
+      test: ["CMD", "redis-cli", "ping"]
+      timeout: 3s
+    volumes:
+      - redisdata:/data # Persist data
+    ports:
+      - "6379:6379"
+
+  redirect-svc:
+    restart: unless-stopped
+    build:
+      context: ./redirect-svc
+      dockerfile: Dockerfile
+    environment:
+      CACHE_SIZE: "100"
+      DATABASE_URL: postgres://min-url-rs:changeme@postgres/min-url-rs
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+  slug-filler:
+    restart: unless-stopped
+    build:
+      context: ./slug-filler
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://min-url-rs:changeme@postgres/min-url-rs
+      QUEUE_SIZE: "100000" # 100k
+      REDIS_URL: redis://redis:6379
+      SLUG_LEN: "6"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  write-svc:
+    restart: unless-stopped
+    build:
+      context: ./write-svc
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://min-url-rs:changeme@postgres/min-url-rs
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+
+volumes:
+  pgdata:
+  redisdata:
