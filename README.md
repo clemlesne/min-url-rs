@@ -128,6 +128,8 @@ $ wrk -t8 -c1024 -d30s http://localhost:8080/aP6eoE
 
 ## 6. Ops notes
 
-* Put a CDN (Cloudflare, Fastly) in front to edge‑cache 302s.
-* Switch Redis to Cluster/Valkey when QPS > 500 k.
-* Alert when `slug_pool` < 10 k or `write_retry_total` > 1 %.
+* Alert when `slug_pool` < 10k or `write_retry_total` > 1%.
+* Push telemetry to an OTEL collector (e.g. Prometheus, Azure App Insights, Datadog).
+* Put a CDN (Cloudflare, Fastly) in front to edge-cache 302s.
+* Switch Redis to Cluster/Valkey if high QPS > 50k.
+* Use `pg_partman` to manage Postgres partitions.
