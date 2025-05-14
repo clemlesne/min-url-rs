@@ -110,12 +110,14 @@ async fn handle_redirect(
 
     // Otherwise, look it up in Redis and Postgres
     match lookup(&slug, &state).await {
+        // If slug found, cache and return it
         Ok(Some(url)) => {
             // Store in memory cache
             state
                 .memory_cache
                 .insert(slug, Arc::new(Some(url.clone())))
                 .await;
+            // Return a redirect
             Redirect::temporary(&url).into_response()
         }
         // If slug is not found, cache and return 404
@@ -125,6 +127,7 @@ async fn handle_redirect(
             // Return 404
             axum::http::StatusCode::NOT_FOUND.into_response()
         }
+        // If there was an error, return 503
         Err(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }

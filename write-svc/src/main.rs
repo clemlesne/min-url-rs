@@ -182,7 +182,9 @@ async fn allocate_mini_slug(state: &AppState, payload: &ShortenPayload) -> Resul
             status: Status::Other,
         })?;
         let slug = match slug_opt {
+            // If we got a slug, return it
             Some(s) => s,
+            // If we didn't, return an error
             None => {
                 return Err(MiniErr {
                     status: Status::NoSlug,
@@ -192,11 +194,14 @@ async fn allocate_mini_slug(state: &AppState, payload: &ShortenPayload) -> Resul
 
         // 2, try insert into Postgres
         match insert_slug(state, &slug, &payload.url, &payload.owner).await {
+            // If inserted, return the slug
             Ok(true) => return Ok(slug),
+            // If conflict, retry
             Ok(false) => {
-                // collision, retry with another slug
+                tracing::debug!("Slug {slug} already exists, retrying ({retry})");
                 continue;
             }
+            // If error, return error
             Err(_) => {
                 return Err(MiniErr {
                     status: Status::Other,
