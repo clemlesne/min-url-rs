@@ -161,7 +161,7 @@ async fn shorten(
         Json(ShortenPayload {
             owner: payload.owner,
             slug: Some(slug),
-            url: payload.url.clone(),
+            url: payload.url,
         }),
     ))
 }
