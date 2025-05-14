@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
 
     // Register the shorten handler
     let app = Router::new()
-        .route("/shorten", post(shorten))
+        .route("/shorten", post(handle_shorten_post))
         .with_state(state)
         .layer(
             ServiceBuilder::new()
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
 }
 
 /// Shorten URL handler
-async fn shorten(
+async fn handle_shorten_post(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ShortenPayload>,
 ) -> Result<impl IntoResponse, StatusCode> {

@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
 
     // Register the slug handler
     let app = Router::new()
-        .route("/{slug}", get(handle_redirect))
+        .route("/{slug}", get(handle_redirect_get))
         .with_state(state)
         .layer(
             ServiceBuilder::new()
@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn handle_redirect(
+async fn handle_redirect_get(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
