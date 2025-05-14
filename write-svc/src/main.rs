@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
 
     // Register the shorten handler
     let app = Router::new()
-        .route("/shorten", post(shorten))
+        .route("/shorten", post(handle_shorten_post))
         .with_state(state)
         .layer(
             ServiceBuilder::new()
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
 }
 
 /// Shorten URL handler
-async fn shorten(
+async fn handle_shorten_post(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ShortenPayload>,
 ) -> Result<impl IntoResponse, StatusCode> {
@@ -121,7 +121,10 @@ async fn shorten(
         match insert_slug(&state, &custom, &payload.url, &payload.owner).await {
             Ok(true) => custom,
             Ok(false) => return Err(StatusCode::CONFLICT),
-            Err(_) => return Err(StatusCode::SERVICE_UNAVAILABLE),
+            Err(e) => {
+                tracing::error!("Failed to insert slug: {}", e);
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            }
         }
 
     // Otherwise, allocate a mini-slug from the pool
@@ -136,11 +139,10 @@ async fn shorten(
     };
 
     // Try to get a Redis connection
-    let mut redis_conn = state
-        .redis_pool
-        .get()
-        .await
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let mut redis_conn = state.redis_pool.get().await.map_err(|e| {
+        tracing::error!("Failed to get Redis connection: {}", e);
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
 
     // Cache in Redis (fire & forget)
     let url_clone = payload.url.clone();

@@ -2,9 +2,9 @@
 
 > **A fast, horizontally-scalable URL shortener in Rust.**
 >
-> * **redirect-svc** – 100k rps GET /{slug} -> 302 via LRU -> Redis -> Postgres.
-> * **slug-filler** – keeps >= 100k random slugs ready in Redis.
-> * **write-svc** – POST /shorten, reserves alias, persists, back-fills Redis.
+> * **redirect-svc** – 100k rps on commodity hardware, plus QR code generation.
+> * **slug-filler** – Keeps slugs ready.
+> * **write-svc** – Reserves aliases.
 
 ## 1. Quick start
 
@@ -29,17 +29,17 @@ $ curl -I http://localhost:8080/aP6eoE
 
 ## 2. Services
 
-| Service      | Path            | Port     | Role                               |
-| ------------ | --------------- | -------- | ---------------------------------- |
-| redirect-svc | `redirect-svc/` | **8080** | GET /{slug} -> 302 (read-only path) |
-| slug-filler  | `slug-filler/`  | –        | Keeps `slug_pool` filled in Redis  |
-| write-svc    | `write-svc/`    | **8081** | POST /shorten (create path)        |
+| Service | Path | Port | Role |
+| - | - | - | - |
+| redirect-svc | `redirect-svc/` | **8080** | GET /{slug} -> 302</br>GET /{slug}/qr -> QR code |
+| slug-filler | `slug-filler/` | – | Keeps `slug_pool` filled in Redis |
+| write-svc | `write-svc/` | **8081** | POST /shorten |
 
 All three are pure async Tokio binaries, deployable as stateless pods.
 
 ## 3. API
 
-### POST `/shorten`  (write-svc)
+### POST `/shorten` (write-svc)
 
 ```jsonc
 {
@@ -53,7 +53,7 @@ All three are pure async Tokio binaries, deployable as stateless pods.
 * **409 Conflict** – alias already exists (custom only)
 * **503 Service Unavailable** – slug\_pool empty or backing store down
 
-### GET `/{slug}`  (redirect-svc)
+### GET `/{slug}` (redirect-svc)
 
 * **302 Found** -> Location original URL
 * **404 Not Found** – unknown slug

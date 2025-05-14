@@ -1,8 +1,10 @@
 use anyhow::Result;
+use axum::http::StatusCode;
 use axum::{
     Router,
-    extract::{Path, State},
-    response::{IntoResponse, Redirect},
+    extract::{Path, Query, State},
+    http::header,
+    response::{IntoResponse, Redirect, Response},
     routing::get,
 };
 use deadpool_postgres::{
@@ -12,18 +14,42 @@ use deadpool_postgres::{
 use deadpool_redis::{
     Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime, redis::cmd,
 };
+use image::{DynamicImage, ImageFormat as ImageOutputFormat, Luma, Rgb};
 use moka::future::Cache;
+use qrcode::render::svg;
+use qrcode::{EcLevel, QrCode, Version};
+use std::collections::HashMap;
+use std::io::Cursor;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::{env, time::Duration};
+use strum_macros::EnumString;
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use url::Url;
 
 /// Web application state
 struct AppState {
     memory_cache: Cache<String, Arc<Option<String>>>,
     pg_pool: PostgresPool,
     redis_pool: RedisPool,
+    self_domain: String,
+}
+
+/// Image format for QR code
+#[derive(Debug, EnumString)]
+enum ImageFormat {
+    #[strum(ascii_case_insensitive)]
+    Gif,
+    #[strum(ascii_case_insensitive)]
+    Jpeg,
+    #[strum(ascii_case_insensitive)]
+    Png,
+    #[strum(ascii_case_insensitive)]
+    Svg,
+    #[strum(ascii_case_insensitive)]
+    Webp,
 }
 
 /// Entrypoint
@@ -47,6 +73,7 @@ async fn main() -> Result<()> {
     // Load environment variables
     let db_url = env::var("DATABASE_URL")?;
     let redis_url = env::var("REDIS_URL")?;
+    let self_domain = env::var("SELF_DOMAIN")?;
 
     // Connect Redis
     let redis_cfg = RedisConfig::from_url(&redis_url);
@@ -68,14 +95,16 @@ async fn main() -> Result<()> {
 
     // Build the app state
     let state = Arc::new(AppState {
-        redis_pool,
-        pg_pool,
         memory_cache,
+        pg_pool,
+        redis_pool,
+        self_domain,
     });
 
     // Register the slug handler
     let app = Router::new()
-        .route("/{slug}", get(handle_redirect))
+        .route("/{slug}", get(handle_redirect_get)) // Redirect to the URL
+        .route("/{slug}/qr", get(handle_qrcode_get)) // Generate QR code
         .with_state(state)
         .layer(
             ServiceBuilder::new()
@@ -91,48 +120,120 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn handle_redirect(
+/// Handle QR code generation
+async fn handle_qrcode_get(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    // Validate size
+    let size = match params.get("size") {
+        Some(size) => match size.parse::<u32>() {
+            Ok(size) => size.clamp(32, 512),
+            Err(_) => 128, // Default to 128
+        },
+        None => 128, // Default to 128
+    };
+
+    // Validate format
+    let format = match params.get("format") {
+        Some(format) => ImageFormat::from_str(format.as_str()).unwrap_or(
+            ImageFormat::Svg, // Default to SVG
+        ),
+        None => ImageFormat::Svg, // Default to SVG
+    };
+
+    // Get the slug from the cache or live databases
+    match lookup_cached(&slug, &state).await {
+        // If slug found, generate QR code
+        Ok(Some(_)) => {
+            let qr_code = generate_qrcode_res(&slug, &format, size, &state);
+            match qr_code {
+                Ok(qr_code) => {
+                    tracing::debug!(
+                        "Generated QR code: slug={}, size={}, format={:?}",
+                        slug,
+                        size,
+                        format
+                    );
+                    qr_code
+                }
+                Err(e) => {
+                    tracing::error!("Failed to generate QR code: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                }
+            }
+        }
+        // If slug not found, return 404
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        // If there was an error, return 503
+        Err(e) => {
+            tracing::error!("Failed to lookup slug: {}", e);
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
+    }
+}
+
+/// Handle HTTP redirects
+async fn handle_redirect_get(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
-    // If slug is in the memory cache, return it
-    if let Some(url) = state.memory_cache.get(&slug).await {
+    match lookup_cached(&slug, &state).await {
+        // If slug found, redirect to it
+        Ok(Some(url)) => Redirect::to(&url).into_response(),
+        // If slug not found, return 404
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        // If there was an error, return 503
+        Err(e) => {
+            tracing::error!("Failed to lookup slug: {}", e);
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
+    }
+}
+
+/// Get a URL from the memory cache or live databases if required
+async fn lookup_cached(slug: &str, state: &AppState) -> Result<Option<String>> {
+    // Check in memory cache
+    if let Some(url) = state.memory_cache.get(slug).await {
         // If the URL is None, return 404
         if url.is_none() {
             tracing::debug!("Slug {slug} cached as None");
-            return axum::http::StatusCode::NOT_FOUND.into_response();
+            return Ok(None);
         }
-        // Otherwise, return a redirect
+        // Otherwise, return it
         let url = url.as_ref().clone().unwrap();
         tracing::debug!("Slug {} cached as {}", slug, &url);
-        return Redirect::temporary(&url).into_response();
+        return Ok(Some(url));
     }
 
-    // Otherwise, look it up in Redis and Postgres
-    match lookup(&slug, &state).await {
+    // Check live
+    match lookup_live(slug, state).await {
         // If slug found, cache and return it
         Ok(Some(url)) => {
             // Store in memory cache
             state
                 .memory_cache
-                .insert(slug, Arc::new(Some(url.clone())))
+                .insert(slug.to_string(), Arc::new(Some(url.clone())))
                 .await;
-            // Return a redirect
-            Redirect::temporary(&url).into_response()
+            Ok(Some(url))
         }
         // If slug is not found, cache and return 404
         Ok(None) => {
             // Store in memory cache
-            state.memory_cache.insert(slug, Arc::new(None)).await;
-            // Return 404
-            axum::http::StatusCode::NOT_FOUND.into_response()
+            state
+                .memory_cache
+                .insert(slug.to_string(), Arc::new(None))
+                .await;
+            Ok(None)
         }
-        // If there was an error, return 503
-        Err(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        // If there was an error, return it
+        Err(e) => Err(e),
     }
 }
 
-async fn lookup(slug: &str, state: &AppState) -> Result<Option<String>> {
+/// Get a URL from the databases (PostgreSQL and Redis)
+async fn lookup_live(slug: &str, state: &AppState) -> Result<Option<String>> {
     // Get a Redis connection
     let mut redis_conn = state.redis_pool.get().await?;
 
@@ -174,4 +275,72 @@ async fn lookup(slug: &str, state: &AppState) -> Result<Option<String>> {
         tracing::debug!("Stored slug {slug} in Redis");
     });
     Ok(Some(url))
+}
+
+/// Generate a QR code for the given URL, as an image, use the public URL as QR content
+fn generate_qrcode_res(
+    slug: &str,
+    format: &ImageFormat,
+    size: u32,
+    state: &AppState,
+) -> Result<Response> {
+    // Build the public URL
+    let mut url = Url::from_str(&state.self_domain)?;
+    url.set_path(slug);
+
+    // Generate the QR code
+    let code = QrCode::with_version(url.as_str().as_bytes(), Version::Normal(10), EcLevel::L)?;
+
+    // Encode
+    let res = match format {
+        ImageFormat::Gif => {
+            let img = code.render::<Luma<u8>>().min_dimensions(size, size).build();
+            let mut buf = Vec::<u8>::new();
+            let mut cursor = Cursor::new(&mut buf);
+            DynamicImage::ImageLuma8(img).write_to(&mut cursor, ImageOutputFormat::Gif)?;
+            Response::builder()
+                .header(header::CONTENT_TYPE, "image/gif")
+                .body(buf.into())?
+        }
+        ImageFormat::Jpeg => {
+            let img = code.render::<Luma<u8>>().min_dimensions(size, size).build();
+            let mut buf = Vec::<u8>::new();
+            let mut cursor = Cursor::new(&mut buf);
+            DynamicImage::ImageLuma8(img).write_to(&mut cursor, ImageOutputFormat::Jpeg)?;
+            Response::builder()
+                .header(header::CONTENT_TYPE, "image/jpeg")
+                .body(buf.into())?
+        }
+        ImageFormat::Png => {
+            let img = code.render::<Luma<u8>>().min_dimensions(size, size).build();
+            let mut buf = Vec::<u8>::new();
+            let mut cursor: Cursor<&mut Vec<u8>> = Cursor::new(&mut buf);
+            DynamicImage::ImageLuma8(img).write_to(&mut cursor, ImageOutputFormat::Png)?;
+            Response::builder()
+                .header(header::CONTENT_TYPE, "image/png")
+                .body(buf.into())?
+        }
+        ImageFormat::Webp => {
+            let img = code.render::<Rgb<u8>>().min_dimensions(size, size).build();
+            let mut buf = Vec::<u8>::new();
+            let mut cursor = Cursor::new(&mut buf);
+            DynamicImage::ImageRgb8(img).write_to(&mut cursor, ImageOutputFormat::WebP)?;
+            Response::builder()
+                .header(header::CONTENT_TYPE, "image/webp")
+                .body(buf.into())?
+        }
+        ImageFormat::Svg => {
+            let svg = code
+                .render()
+                .min_dimensions(size, size)
+                .dark_color(svg::Color("#000"))
+                .light_color(svg::Color("#fff"))
+                .build();
+            Response::builder()
+                .header(header::CONTENT_TYPE, "image/svg+xml")
+                .body(svg.into())?
+        }
+    };
+
+    Ok(res)
 }
