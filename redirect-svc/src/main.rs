@@ -1,4 +1,5 @@
 use anyhow::Result;
+use axum::http::StatusCode;
 use axum::{
     Router,
     extract::{Path, State},
@@ -91,48 +92,66 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Handle HTTP redirects
 async fn handle_redirect_get(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
-    // If slug is in the memory cache, return it
-    if let Some(url) = state.memory_cache.get(&slug).await {
+    match lookup_cached(&slug, &state).await {
+        // If slug found, redirect to it
+        Ok(Some(url)) => Redirect::to(&url).into_response(),
+        // If slug not found, return 404
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        // If there was an error, return 503
+        Err(e) => {
+            tracing::error!("Failed to lookup slug: {}", e);
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
+    }
+}
+
+/// Get a URL from the memory cache or live databases if required
+async fn lookup_cached(slug: &str, state: &AppState) -> Result<Option<String>> {
+    // Check in memory cache
+    if let Some(url) = state.memory_cache.get(slug).await {
         // If the URL is None, return 404
         if url.is_none() {
             tracing::debug!("Slug {slug} cached as None");
-            return axum::http::StatusCode::NOT_FOUND.into_response();
+            return Ok(None);
         }
-        // Otherwise, return a redirect
+        // Otherwise, return it
         let url = url.as_ref().clone().unwrap();
         tracing::debug!("Slug {} cached as {}", slug, &url);
-        return Redirect::temporary(&url).into_response();
+        return Ok(Some(url));
     }
 
-    // Otherwise, look it up in Redis and Postgres
-    match lookup(&slug, &state).await {
+    // Check live
+    match lookup_live(slug, state).await {
         // If slug found, cache and return it
         Ok(Some(url)) => {
             // Store in memory cache
             state
                 .memory_cache
-                .insert(slug, Arc::new(Some(url.clone())))
+                .insert(slug.to_string(), Arc::new(Some(url.clone())))
                 .await;
-            // Return a redirect
-            Redirect::temporary(&url).into_response()
+            Ok(Some(url))
         }
         // If slug is not found, cache and return 404
         Ok(None) => {
             // Store in memory cache
-            state.memory_cache.insert(slug, Arc::new(None)).await;
-            // Return 404
-            axum::http::StatusCode::NOT_FOUND.into_response()
+            state
+                .memory_cache
+                .insert(slug.to_string(), Arc::new(None))
+                .await;
+            Ok(None)
         }
-        // If there was an error, return 503
-        Err(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        // If there was an error, return it
+        Err(e) => Err(e),
     }
 }
 
-async fn lookup(slug: &str, state: &AppState) -> Result<Option<String>> {
+/// Get a URL from the databases (PostgreSQL and Redis)
+async fn lookup_live(slug: &str, state: &AppState) -> Result<Option<String>> {
     // Get a Redis connection
     let mut redis_conn = state.redis_pool.get().await?;
 
