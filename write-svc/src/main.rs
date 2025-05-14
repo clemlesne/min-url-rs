@@ -121,7 +121,10 @@ async fn handle_shorten_post(
         match insert_slug(&state, &custom, &payload.url, &payload.owner).await {
             Ok(true) => custom,
             Ok(false) => return Err(StatusCode::CONFLICT),
-            Err(_) => return Err(StatusCode::SERVICE_UNAVAILABLE),
+            Err(e) => {
+                tracing::error!("Failed to insert slug: {}", e);
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            }
         }
 
     // Otherwise, allocate a mini-slug from the pool
@@ -136,11 +139,10 @@ async fn handle_shorten_post(
     };
 
     // Try to get a Redis connection
-    let mut redis_conn = state
-        .redis_pool
-        .get()
-        .await
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let mut redis_conn = state.redis_pool.get().await.map_err(|e| {
+        tracing::error!("Failed to get Redis connection: {}", e);
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
 
     // Cache in Redis (fire & forget)
     let url_clone = payload.url.clone();
