@@ -9,6 +9,7 @@ use deadpool_redis::{
 };
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -37,7 +38,6 @@ enum Status {
 }
 
 /// Web application state
-#[derive(Clone)]
 struct AppState {
     pg_pool: PostgresPool,
     redis_pool: RedisPool,
@@ -78,10 +78,10 @@ async fn main() -> Result<()> {
     let pg_pool: PostgresPool = pg_cfg.create_pool(Some(PgRuntime::Tokio1), NoTls)?;
 
     // Build the app state
-    let state = AppState {
+    let state = Arc::new(AppState {
         redis_pool,
         pg_pool,
-    };
+    });
 
     // Register the shorten handler
     let app = Router::new()
@@ -103,7 +103,7 @@ async fn main() -> Result<()> {
 
 /// Shorten URL handler
 async fn shorten(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<ShortenPayload>,
 ) -> Result<impl IntoResponse, StatusCode> {
     // Check if URL is HTTP(S)
@@ -161,15 +161,15 @@ async fn shorten(
         Json(ShortenPayload {
             owner: payload.owner,
             slug: Some(slug),
-            url: payload.url.clone(),
+            url: payload.url,
         }),
     ))
 }
 
-/// Allocate a mini-slug from the pool, retrying up to 3 times
+/// Allocate a mini-slug from the pool, retrying up to 6 times
 async fn allocate_mini_slug(state: &AppState, payload: &ShortenPayload) -> Result<String, MiniErr> {
-    // Retry up to 3 times
-    for _ in 0..3 {
+    // Retry to consume the queue up to 6 times
+    for retry in 0..6 {
         // 1, pop slug from Redis list
         let mut rconn = state.redis_pool.get().await.map_err(|_| MiniErr {
             status: Status::Other,
@@ -182,7 +182,9 @@ async fn allocate_mini_slug(state: &AppState, payload: &ShortenPayload) -> Resul
             status: Status::Other,
         })?;
         let slug = match slug_opt {
+            // If we got a slug, return it
             Some(s) => s,
+            // If we didn't, return an error
             None => {
                 return Err(MiniErr {
                     status: Status::NoSlug,
@@ -192,11 +194,14 @@ async fn allocate_mini_slug(state: &AppState, payload: &ShortenPayload) -> Resul
 
         // 2, try insert into Postgres
         match insert_slug(state, &slug, &payload.url, &payload.owner).await {
+            // If inserted, return the slug
             Ok(true) => return Ok(slug),
+            // If conflict, retry
             Ok(false) => {
-                // collision, retry with another slug
+                tracing::debug!("Slug {slug} already exists, retrying ({retry})");
                 continue;
             }
+            // If error, return error
             Err(_) => {
                 return Err(MiniErr {
                     status: Status::Other,

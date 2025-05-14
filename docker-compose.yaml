@@ -39,6 +39,10 @@ services:
     build:
       args:
         - SERVICE_NAME=redirect-svc
+    develop:
+      watch:
+        - action: rebuild
+          path: redirect-svc
     environment:
       CACHE_SIZE: "100"
       DATABASE_URL: postgres://min-url-rs:changeme@postgres/min-url-rs
@@ -56,6 +60,10 @@ services:
     build:
       args:
         - SERVICE_NAME=slug-filler
+    develop:
+      watch:
+        - action: rebuild
+          path: slug-filler
     environment:
       DATABASE_URL: postgres://min-url-rs:changeme@postgres/min-url-rs
       QUEUE_SIZE: "100000" # 100k
@@ -72,6 +80,10 @@ services:
     build:
       args:
         - SERVICE_NAME=write-svc
+    develop:
+      watch:
+        - action: rebuild
+          path: write-svc
     environment:
       DATABASE_URL: postgres://min-url-rs:changeme@postgres/min-url-rs
       REDIS_URL: redis://redis:6379

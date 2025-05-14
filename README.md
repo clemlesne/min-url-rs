@@ -119,7 +119,7 @@ flowchart LR
 ## 5. Local dev & tests
 
 ```bash
-# Run services in Docker
+# Run services in Docker (with auto-reload)
 $ make dev
 
 # Benchmark a path

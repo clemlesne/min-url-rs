@@ -1,7 +1,7 @@
 use anyhow::Result;
 use axum::{
     Router,
-    extract::Path,
+    extract::{Path, State},
     response::{IntoResponse, Redirect},
     routing::get,
 };
@@ -13,15 +13,15 @@ use deadpool_redis::{
     Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime, redis::cmd,
 };
 use moka::future::Cache;
+use std::sync::Arc;
 use std::{env, time::Duration};
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Web application state
-#[derive(Clone)]
 struct AppState {
-    memory_cache: Cache<String, String>,
+    memory_cache: Cache<String, Arc<Option<String>>>,
     pg_pool: PostgresPool,
     redis_pool: RedisPool,
 }
@@ -61,17 +61,17 @@ async fn main() -> Result<()> {
     let pg_pool: PostgresPool = pg_cfg.create_pool(Some(PgRuntime::Tokio1), NoTls)?;
 
     // Build slug memory cache (TTL 30s)
-    let memory_cache = Cache::builder()
+    let memory_cache: Cache<String, Arc<Option<String>>> = Cache::builder()
         .max_capacity(100)
         .time_to_live(Duration::from_secs(30))
         .build();
 
     // Build the app state
-    let state = AppState {
+    let state = Arc::new(AppState {
         redis_pool,
         pg_pool,
         memory_cache,
-    };
+    });
 
     // Register the slug handler
     let app = Router::new()
@@ -92,22 +92,42 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_redirect(
+    State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
-    axum::extract::State(state): axum::extract::State<AppState>,
 ) -> impl IntoResponse {
     // If slug is in the memory cache, return it
     if let Some(url) = state.memory_cache.get(&slug).await {
-        tracing::debug!("Slug {slug} found in memory cache");
+        // If the URL is None, return 404
+        if url.is_none() {
+            tracing::debug!("Slug {slug} cached as None");
+            return axum::http::StatusCode::NOT_FOUND.into_response();
+        }
+        // Otherwise, return a redirect
+        let url = url.as_ref().clone().unwrap();
+        tracing::debug!("Slug {} cached as {}", slug, &url);
         return Redirect::temporary(&url).into_response();
     }
 
     // Otherwise, look it up in Redis and Postgres
     match lookup(&slug, &state).await {
+        // If slug found, cache and return it
         Ok(Some(url)) => {
-            state.memory_cache.insert(slug.clone(), url.clone()).await;
+            // Store in memory cache
+            state
+                .memory_cache
+                .insert(slug, Arc::new(Some(url.clone())))
+                .await;
+            // Return a redirect
             Redirect::temporary(&url).into_response()
         }
-        Ok(None) => axum::http::StatusCode::NOT_FOUND.into_response(),
+        // If slug is not found, cache and return 404
+        Ok(None) => {
+            // Store in memory cache
+            state.memory_cache.insert(slug, Arc::new(None)).await;
+            // Return 404
+            axum::http::StatusCode::NOT_FOUND.into_response()
+        }
+        // If there was an error, return 503
         Err(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }
