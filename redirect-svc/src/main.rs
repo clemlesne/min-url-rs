@@ -1,7 +1,7 @@
 use anyhow::Result;
 use axum::{
     Router,
-    extract::Path,
+    extract::{Path, State},
     response::{IntoResponse, Redirect},
     routing::get,
 };
@@ -13,15 +13,15 @@ use deadpool_redis::{
     Config as RedisConfig, Pool as RedisPool, Runtime as RedisRuntime, redis::cmd,
 };
 use moka::future::Cache;
+use std::sync::Arc;
 use std::{env, time::Duration};
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Web application state
-#[derive(Clone)]
 struct AppState {
-    memory_cache: Cache<String, String>,
+    memory_cache: Cache<String, Arc<String>>,
     pg_pool: PostgresPool,
     redis_pool: RedisPool,
 }
@@ -61,17 +61,17 @@ async fn main() -> Result<()> {
     let pg_pool: PostgresPool = pg_cfg.create_pool(Some(PgRuntime::Tokio1), NoTls)?;
 
     // Build slug memory cache (TTL 30s)
-    let memory_cache = Cache::builder()
+    let memory_cache: Cache<String, Arc<String>> = Cache::builder()
         .max_capacity(100)
         .time_to_live(Duration::from_secs(30))
         .build();
 
     // Build the app state
-    let state = AppState {
+    let state = Arc::new(AppState {
         redis_pool,
         pg_pool,
         memory_cache,
-    };
+    });
 
     // Register the slug handler
     let app = Router::new()
@@ -92,8 +92,8 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_redirect(
+    State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
-    axum::extract::State(state): axum::extract::State<AppState>,
 ) -> impl IntoResponse {
     // If slug is in the memory cache, return it
     if let Some(url) = state.memory_cache.get(&slug).await {
@@ -104,7 +104,7 @@ async fn handle_redirect(
     // Otherwise, look it up in Redis and Postgres
     match lookup(&slug, &state).await {
         Ok(Some(url)) => {
-            state.memory_cache.insert(slug.clone(), url.clone()).await;
+            state.memory_cache.insert(slug, Arc::new(url.clone())).await;
             Redirect::temporary(&url).into_response()
         }
         Ok(None) => axum::http::StatusCode::NOT_FOUND.into_response(),

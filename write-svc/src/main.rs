@@ -9,6 +9,7 @@ use deadpool_redis::{
 };
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -37,7 +38,6 @@ enum Status {
 }
 
 /// Web application state
-#[derive(Clone)]
 struct AppState {
     pg_pool: PostgresPool,
     redis_pool: RedisPool,
@@ -78,10 +78,10 @@ async fn main() -> Result<()> {
     let pg_pool: PostgresPool = pg_cfg.create_pool(Some(PgRuntime::Tokio1), NoTls)?;
 
     // Build the app state
-    let state = AppState {
+    let state = Arc::new(AppState {
         redis_pool,
         pg_pool,
-    };
+    });
 
     // Register the shorten handler
     let app = Router::new()
@@ -103,7 +103,7 @@ async fn main() -> Result<()> {
 
 /// Shorten URL handler
 async fn shorten(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<ShortenPayload>,
 ) -> Result<impl IntoResponse, StatusCode> {
     // Check if URL is HTTP(S)
