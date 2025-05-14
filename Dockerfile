@@ -39,8 +39,7 @@ RUN adduser \
     appuser
 
 # Copy binary
-COPY --from=builder /app-root/service /usr/local/bin
-RUN chown appuser /usr/local/bin/service
+COPY --from=builder --chown=appuser:appuser /app-root/service /usr/local/bin
 
 # Setup environment
 ENTRYPOINT ["service"]

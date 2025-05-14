@@ -13,7 +13,7 @@ upgrade:
 
 dev:
 	@echo "➡️ Running dev services"
-	docker-compose -f docker-compose.yaml up --build
+	docker-compose -f docker-compose.yaml up --build --watch
 
 clean:
 	@echo "➡️ Cleaning up dev services"
