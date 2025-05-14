@@ -166,10 +166,10 @@ async fn shorten(
     ))
 }
 
-/// Allocate a mini-slug from the pool, retrying up to 3 times
+/// Allocate a mini-slug from the pool, retrying up to 6 times
 async fn allocate_mini_slug(state: &AppState, payload: &ShortenPayload) -> Result<String, MiniErr> {
-    // Retry up to 3 times
-    for _ in 0..3 {
+    // Retry to consume the queue up to 6 times
+    for retry in 0..6 {
         // 1, pop slug from Redis list
         let mut rconn = state.redis_pool.get().await.map_err(|_| MiniErr {
             status: Status::Other,
