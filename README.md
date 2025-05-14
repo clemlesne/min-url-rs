@@ -31,7 +31,7 @@ $ curl -I http://localhost:8080/aP6eoE
 
 | Service | Path | Port | Role |
 | - | - | - | - |
-| redirect-svc | `redirect-svc/` | **8080** | GET /{slug} -> 302 (read-only path) |
+| redirect-svc | `redirect-svc/` | **8080** | GET /{slug} -> 302</br>GET /{slug}/qr -> QR code |
 | slug-filler | `slug-filler/` | – | Keeps `slug_pool` filled in Redis |
 | write-svc | `write-svc/` | **8081** | POST /shorten |
 

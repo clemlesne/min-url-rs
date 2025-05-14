@@ -17,3 +17,13 @@ tower-http = { version = "0.6.4", features = [
 ] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+qrcode = "0.14.1"
+image = { version = "0.25.6", default-features = false, features = [
+    "png",
+    "gif",
+    "jpeg",
+    "webp",
+] }
+strum = "0.27.1"
+strum_macros = "0.27.1"
+url = "2.5.4"
