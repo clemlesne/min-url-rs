@@ -9,22 +9,25 @@
 ## 1. Quick start
 
 ```bash
-# 1 – clone & build
-$ git clone https://github.com/clemlesne/min-url-rs
-$ cd min-url-rs
+# 1 - Clone
+$ git clone https://github.com/clemlesne/min-url-rs && cd min-url-rs
 
-# 2 – launch full stack (Postgres, Redis, 3 services)
-$ docker compose up --build
+# 2 - Run services in Docker (with auto-reload)
+$ make dev
 
-# 3 – shorten a URL
+# 3 - Shorten a URL
 $ curl -X POST http://localhost:8081/shorten \
        -H 'Content-Type: application/json' \
-       -d '{"url":"https://yahoo.fr"}'
-# ← { "alias": "aP6eoE", "url": "https://yahoo.fr" }
+       -d '{"url":"https://google.fr"}'
+# { "alias": "aP6eoE", "url": "https://google.fr" }
 
-# 4 – follow the link
+# 4 – Follow the link
 $ curl -I http://localhost:8080/aP6eoE
-# ← HTTP/1.1 302 -> Location: https://yahoo.fr
+# HTTP 302 -> Location: https://google.fr
+
+# 5 - Download a QR code
+$ curl http://localhost:8080/aP6eoE/qr?format=svg&size=256 -o qr256.svg
+# Open it into your browser or explorer
 ```
 
 ## 2. Services
