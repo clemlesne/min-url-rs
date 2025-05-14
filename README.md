@@ -19,7 +19,7 @@ $ make dev
 $ curl -X POST http://localhost:8081/shorten \
        -H 'Content-Type: application/json' \
        -d '{"url":"https://google.fr"}'
-# { "alias": "aP6eoE", "url": "https://google.fr" }
+# { "slug": "aP6eoE", "url": "https://google.fr" }
 
 # 4 – Follow the link
 $ curl -I http://localhost:8080/aP6eoE
