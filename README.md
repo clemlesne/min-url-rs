@@ -2,9 +2,9 @@
 
 > **A fast, horizontally-scalable URL shortener in Rust.**
 >
-> * **redirect-svc** – 100k rps GET /{slug} -> 302 via LRU -> Redis -> Postgres.
-> * **slug-filler** – keeps >= 100k random slugs ready in Redis.
-> * **write-svc** – POST /shorten, reserves alias, persists, back-fills Redis.
+> * **redirect-svc** – 100k rps on commodity hardware, plus QR code generation.
+> * **slug-filler** – Keeps slugs ready.
+> * **write-svc** – Reserves aliases.
 
 ## 1. Quick start
 
