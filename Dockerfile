@@ -47,4 +47,4 @@ EXPOSE 8080/tcp
 USER appuser
 
 # Configure logging
-ENV RUST_LOG="hello_rs=debug,info"
+ENV RUST_LOG="${SERVICE_NAME}=debug,info"
