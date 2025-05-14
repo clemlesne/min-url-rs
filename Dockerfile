@@ -7,20 +7,21 @@ ARG RUST_VERSION=1.86.0
 # Build container
 FROM rust:${RUST_VERSION}-slim-bookworm AS builder
 
+# Setup user context
+ENV HOME=/app-root
+WORKDIR ${HOME}
+
+# Copy sources
+COPY . .
+
 # Source platform from buildx "platform" argument
 ARG TARGETPLATFORM
 
 # Service to package
 ARG SERVICE_NAME
 
-# Build directory
-WORKDIR /app-root
-
-# Copy sources
-COPY . .
-
 # Build
-RUN --mount=target=/app-root/target/,type=cache,id=build-${TARGETPLATFORM},sharing=locked --mount=target=/usr/local/cargo/registry/,type=cache,id=cargo-${TARGETPLATFORM},sharing=locked \
+RUN --mount=target=${HOME}/target,type=cache,id=target-${TARGETPLATFORM},sharing=locked --mount=target=${HOME}/.cargo/git,type=cache,id=cargo-git-${TARGETPLATFORM},sharing=locked --mount=target=${HOME}/.cargo/registry,type=cache,id=cargo-registry-${TARGETPLATFORM},sharing=locked \
     cargo build --release --package ${SERVICE_NAME} \
     && mv target/release/${SERVICE_NAME} service
 
