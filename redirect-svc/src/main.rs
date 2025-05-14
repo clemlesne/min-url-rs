@@ -21,7 +21,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Web application state
 struct AppState {
-    memory_cache: Cache<String, Arc<String>>,
+    memory_cache: Cache<String, Arc<Option<String>>>,
     pg_pool: PostgresPool,
     redis_pool: RedisPool,
 }
@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
     let pg_pool: PostgresPool = pg_cfg.create_pool(Some(PgRuntime::Tokio1), NoTls)?;
 
     // Build slug memory cache (TTL 30s)
-    let memory_cache: Cache<String, Arc<String>> = Cache::builder()
+    let memory_cache: Cache<String, Arc<Option<String>>> = Cache::builder()
         .max_capacity(100)
         .time_to_live(Duration::from_secs(30))
         .build();
@@ -97,17 +97,34 @@ async fn handle_redirect(
 ) -> impl IntoResponse {
     // If slug is in the memory cache, return it
     if let Some(url) = state.memory_cache.get(&slug).await {
-        tracing::debug!("Slug {slug} found in memory cache");
+        // If the URL is None, return 404
+        if url.is_none() {
+            tracing::debug!("Slug {slug} cached as None");
+            return axum::http::StatusCode::NOT_FOUND.into_response();
+        }
+        // Otherwise, return a redirect
+        let url = url.as_ref().clone().unwrap();
+        tracing::debug!("Slug {} cached as {}", slug, &url);
         return Redirect::temporary(&url).into_response();
     }
 
     // Otherwise, look it up in Redis and Postgres
     match lookup(&slug, &state).await {
         Ok(Some(url)) => {
-            state.memory_cache.insert(slug, Arc::new(url.clone())).await;
+            // Store in memory cache
+            state
+                .memory_cache
+                .insert(slug, Arc::new(Some(url.clone())))
+                .await;
             Redirect::temporary(&url).into_response()
         }
-        Ok(None) => axum::http::StatusCode::NOT_FOUND.into_response(),
+        // If slug is not found, cache and return 404
+        Ok(None) => {
+            // Store in memory cache
+            state.memory_cache.insert(slug, Arc::new(None)).await;
+            // Return 404
+            axum::http::StatusCode::NOT_FOUND.into_response()
+        }
         Err(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }
